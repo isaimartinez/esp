@@ -2,7 +2,8 @@
 #include <WebServer.h>
 #include <Wire.h>
 #include <TinyGPS++.h>
-#include <MPU6050.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
 #include <MAX30100_PulseOximeter.h>
 
 // WiFi credentials
@@ -12,7 +13,7 @@ const char* password = "12345678";
 // Create objects
 WebServer server(80);
 TinyGPSPlus gps;
-MPU6050 mpu;
+Adafruit_MPU6050 mpu;
 PulseOximeter pox;
 
 // GPS module connected to Serial2
@@ -40,34 +41,59 @@ bool gpsConnected = false;
 // Timer variables
 unsigned long lastDataUpdate = 0;
 unsigned long lastHeartbeatDetection = 0;
+unsigned long lastLogTime = 0;
+const unsigned long LOG_INTERVAL = 1000; // Log every second
 
 // Callback for pulse detection
 void onBeatDetected() {
   lastHeartbeatDetection = millis();
+  Serial.println("♥ Heartbeat detected!");
 }
 
 // Function to check if an I2C device is connected at a specific address
 bool checkI2CDevice(byte address) {
   Wire.beginTransmission(address);
   byte error = Wire.endTransmission();
+  Serial.print("I2C Device 0x");
+  Serial.print(address, HEX);
+  Serial.print(": ");
+  Serial.println(error == 0 ? "Connected" : "Not found");
   return (error == 0); // Return true if device exists (error = 0)
 }
 
 void setup() {
   // Initialize Serial for debugging
   Serial.begin(115200);
-  Serial.println("ESP32 Sensor Web Server");
+  Serial.println("\n\n");
+  Serial.println("==============================================");
+  Serial.println("ESP32 Sensor Web Server - Starting up...");
+  Serial.println("==============================================");
 
   // Initialize I2C communication
+  Serial.println("Initializing I2C bus...");
   Wire.begin();
+  Serial.println("I2C bus initialized");
   
   // Initialize MPU6050 if connected (address 0x68)
+  Serial.println("\n--- MPU6050 Initialization ---");
   Serial.println("Checking for MPU6050...");
   if (checkI2CDevice(0x68)) {
     Serial.println("MPU6050 found, initializing...");
-    mpu.initialize();
-    if (mpu.testConnection()) {
+    if (mpu.begin()) {
       Serial.println("MPU6050 initialized successfully");
+      
+      // Set up the accelerometer range
+      mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
+      Serial.println("Accelerometer range set to ±8G");
+      
+      // Set up the gyroscope range
+      mpu.setGyroRange(MPU6050_RANGE_500_DEG);
+      Serial.println("Gyroscope range set to ±500°/s");
+      
+      // Set filter bandwidth
+      mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+      Serial.println("Filter bandwidth set to 21Hz");
+      
       mpuConnected = true;
     } else {
       Serial.println("MPU6050 initialization failed");
@@ -77,12 +103,14 @@ void setup() {
   }
   
   // Initialize MAX30100 if connected (address 0x57)
+  Serial.println("\n--- MAX30100 Initialization ---");
   Serial.println("Checking for MAX30100...");
   if (checkI2CDevice(0x57)) {
     Serial.println("MAX30100 found, initializing...");
     if (pox.begin()) {
       Serial.println("MAX30100 initialized successfully");
       pox.setOnBeatDetectedCallback(onBeatDetected);
+      Serial.println("Heartbeat detection callback set");
       maxConnected = true;
     } else {
       Serial.println("MAX30100 initialization failed");
@@ -92,12 +120,18 @@ void setup() {
   }
   
   // Initialize GPS
+  Serial.println("\n--- GPS Initialization ---");
   gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX, GPS_TX);
-  Serial.println("GPS initialized");
+  Serial.print("GPS initialized on pins RX:");
+  Serial.print(GPS_RX);
+  Serial.print(", TX:");
+  Serial.println(GPS_TX);
   gpsConnected = true;
   
   // Set up WiFi Access Point
-  Serial.println("Setting up Access Point...");
+  Serial.println("\n--- WiFi AP Setup ---");
+  Serial.print("Setting up Access Point with SSID: ");
+  Serial.println(ssid);
   WiFi.softAP(ssid, password);
   
   IPAddress IP = WiFi.softAPIP();
@@ -105,15 +139,30 @@ void setup() {
   Serial.println(IP);
   
   // Set up web server routes
+  Serial.println("\n--- Web Server Setup ---");
   server.on("/", handleRoot);
+  Serial.println("Route '/' registered");
   server.on("/data", handleData);
+  Serial.println("Route '/data' registered");
   server.on("/update", HTTP_GET, []() {
     server.send(200, "application/json", getJsonData());
   });
+  Serial.println("Route '/update' registered");
   
   // Start server
   server.begin();
   Serial.println("HTTP server started");
+  
+  Serial.println("\n==============================================");
+  Serial.println("System initialization complete!");
+  Serial.println("Sensor Status:");
+  Serial.print("- GPS: ");
+  Serial.println(gpsConnected ? "Connected" : "Not connected");
+  Serial.print("- MPU6050: ");
+  Serial.println(mpuConnected ? "Connected" : "Not connected");
+  Serial.print("- MAX30100: ");
+  Serial.println(maxConnected ? "Connected" : "Not connected");
+  Serial.println("==============================================\n");
 }
 
 void loop() {
@@ -124,6 +173,74 @@ void loop() {
   if (maxConnected) {
     pox.update();
   }
+  
+  // Print logs periodically
+  if (millis() - lastLogTime > LOG_INTERVAL) {
+    printSensorData();
+    lastLogTime = millis();
+  }
+}
+
+void printSensorData() {
+  Serial.println("\n--- Sensor Readings ---");
+  
+  // GPS data
+  Serial.println("GPS Data:");
+  if (gpsConnected) {
+    Serial.print("  Latitude: ");
+    Serial.print(latitude, 6);
+    Serial.print(", Longitude: ");
+    Serial.println(longitude, 6);
+    Serial.print("  Altitude: ");
+    Serial.print(altitude, 2);
+    Serial.print(" m, Speed: ");
+    Serial.print(speed, 2);
+    Serial.println(" km/h");
+    Serial.print("  Satellites: ");
+    Serial.println(satellites);
+  } else {
+    Serial.println("  Disconnected");
+  }
+  
+  // MPU6050 data
+  Serial.println("MPU6050 Data:");
+  if (mpuConnected) {
+    Serial.print("  Accel X: ");
+    Serial.print(accelX, 2);
+    Serial.print(" m/s², Y: ");
+    Serial.print(accelY, 2);
+    Serial.print(" m/s², Z: ");
+    Serial.print(accelZ, 2);
+    Serial.println(" m/s²");
+    
+    Serial.print("  Gyro X: ");
+    Serial.print(gyroX, 2);
+    Serial.print(" rad/s, Y: ");
+    Serial.print(gyroY, 2);
+    Serial.print(" rad/s, Z: ");
+    Serial.print(gyroZ, 2);
+    Serial.println(" rad/s");
+    
+    Serial.print("  Temperature: ");
+    Serial.print(temperature, 2);
+    Serial.println("°C");
+  } else {
+    Serial.println("  Disconnected");
+  }
+  
+  // MAX30100 data
+  Serial.println("MAX30100 Data:");
+  if (maxConnected) {
+    Serial.print("  Heart Rate: ");
+    Serial.print(heartRate, 1);
+    Serial.print(" BPM, SpO2: ");
+    Serial.print(spO2, 1);
+    Serial.println("%");
+  } else {
+    Serial.println("  Disconnected");
+  }
+  
+  Serial.println("------------------------");
 }
 
 void updateSensorData() {
@@ -133,8 +250,19 @@ void updateSensorData() {
     
     // Read GPS data if connected
     if (gpsConnected) {
+      int availableBytes = gpsSerial.available();
+      if (availableBytes > 0) {
+        Serial.print("GPS bytes available: ");
+        Serial.println(availableBytes);
+      }
+      
       while (gpsSerial.available() > 0) {
-        if (gps.encode(gpsSerial.read())) {
+        char c = gpsSerial.read();
+        if (gps.encode(c)) {
+          if (gps.location.isUpdated()) {
+            Serial.println("GPS location updated");
+          }
+          
           if (gps.location.isValid()) {
             latitude = gps.location.lat();
             longitude = gps.location.lng();
@@ -154,28 +282,38 @@ void updateSensorData() {
     
     // Read MPU6050 data if connected
     if (mpuConnected) {
-      int16_t ax, ay, az, gx, gy, gz;
-      mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+      sensors_event_t a, g, temp;
+      mpu.getEvent(&a, &g, &temp);
       
-      // Convert to meaningful units
-      // Accelerometer LSB sensitivity is 16384 LSB/g for ±2g range (default)
-      accelX = ax / 16384.0; // in g
-      accelY = ay / 16384.0;
-      accelZ = az / 16384.0;
+      // Get accelerometer data (in m/s^2)
+      accelX = a.acceleration.x;
+      accelY = a.acceleration.y;
+      accelZ = a.acceleration.z;
       
-      // Gyro LSB sensitivity is 131 LSB/(°/s) for ±250°/s range (default)
-      gyroX = gx / 131.0; // in °/s
-      gyroY = gy / 131.0;
-      gyroZ = gz / 131.0;
+      // Get gyroscope data (in rad/s)
+      gyroX = g.gyro.x;
+      gyroY = g.gyro.y;
+      gyroZ = g.gyro.z;
       
-      // Read temperature from MPU6050
-      temperature = mpu.getTemperature() / 340.0 + 36.53; // Formula from datasheet
+      // Get temperature (in °C)
+      temperature = temp.temperature;
     }
     
     // Read MAX30100 data if connected
     if (maxConnected) {
+      float prevHeartRate = heartRate;
+      float prevSpO2 = spO2;
+      
       heartRate = pox.getHeartRate();
       spO2 = pox.getSpO2();
+      
+      if (heartRate != prevHeartRate || spO2 != prevSpO2) {
+        Serial.print("MAX30100 Update - Heart rate: ");
+        Serial.print(heartRate);
+        Serial.print(" BPM, SpO2: ");
+        Serial.print(spO2);
+        Serial.println("%");
+      }
     }
   }
 }
@@ -217,7 +355,13 @@ String getJsonData() {
   return json;
 }
 
+void handleWebRequest() {
+  Serial.print("Web request received: ");
+  Serial.println(server.uri());
+}
+
 void handleRoot() {
+  handleWebRequest();
   String html = "<!DOCTYPE html>"
                 "<html lang='en'>"
                 "<head>"
@@ -252,12 +396,12 @@ void handleRoot() {
                 "    </div>"
                 "    <div class='card'>"
                 "      <h2>MPU6050 Data <span id='mpu-status' class='disconnected'>(Disconnected)</span></h2>"
-                "      <div class='data-row'><span class='label'>Accel X:</span> <span id='mpu-ax' class='value'>--.-</span> g</div>"
-                "      <div class='data-row'><span class='label'>Accel Y:</span> <span id='mpu-ay' class='value'>--.-</span> g</div>"
-                "      <div class='data-row'><span class='label'>Accel Z:</span> <span id='mpu-az' class='value'>--.-</span> g</div>"
-                "      <div class='data-row'><span class='label'>Gyro X:</span> <span id='mpu-gx' class='value'>--.-</span> °/s</div>"
-                "      <div class='data-row'><span class='label'>Gyro Y:</span> <span id='mpu-gy' class='value'>--.-</span> °/s</div>"
-                "      <div class='data-row'><span class='label'>Gyro Z:</span> <span id='mpu-gz' class='value'>--.-</span> °/s</div>"
+                "      <div class='data-row'><span class='label'>Accel X:</span> <span id='mpu-ax' class='value'>--.-</span> m/s²</div>"
+                "      <div class='data-row'><span class='label'>Accel Y:</span> <span id='mpu-ay' class='value'>--.-</span> m/s²</div>"
+                "      <div class='data-row'><span class='label'>Accel Z:</span> <span id='mpu-az' class='value'>--.-</span> m/s²</div>"
+                "      <div class='data-row'><span class='label'>Gyro X:</span> <span id='mpu-gx' class='value'>--.-</span> rad/s</div>"
+                "      <div class='data-row'><span class='label'>Gyro Y:</span> <span id='mpu-gy' class='value'>--.-</span> rad/s</div>"
+                "      <div class='data-row'><span class='label'>Gyro Z:</span> <span id='mpu-gz' class='value'>--.-</span> rad/s</div>"
                 "      <div class='data-row'><span class='label'>Temperature:</span> <span id='mpu-temp' class='value'>--.-</span> °C</div>"
                 "    </div>"
                 "    <div class='card'>"
@@ -322,8 +466,11 @@ void handleRoot() {
                 "</body>"
                 "</html>";
   server.send(200, "text/html", html);
+  Serial.println("Home page served");
 }
 
 void handleData() {
+  handleWebRequest();
   server.send(200, "application/json", getJsonData());
+  Serial.println("JSON data served");
 }

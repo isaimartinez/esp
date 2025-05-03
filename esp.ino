@@ -32,6 +32,11 @@ float temperature = 0;
 float heartRate = 0;
 float spO2 = 0;
 
+// Sensor status flags
+bool mpuConnected = false;
+bool maxConnected = false;
+bool gpsConnected = false;
+
 // Timer variables
 unsigned long lastDataUpdate = 0;
 unsigned long lastHeartbeatDetection = 0;
@@ -39,6 +44,13 @@ unsigned long lastHeartbeatDetection = 0;
 // Callback for pulse detection
 void onBeatDetected() {
   lastHeartbeatDetection = millis();
+}
+
+// Function to check if an I2C device is connected at a specific address
+bool checkI2CDevice(byte address) {
+  Wire.beginTransmission(address);
+  byte error = Wire.endTransmission();
+  return (error == 0); // Return true if device exists (error = 0)
 }
 
 void setup() {
@@ -49,27 +61,40 @@ void setup() {
   // Initialize I2C communication
   Wire.begin();
   
-  // Initialize MPU6050
-  Serial.println("Initializing MPU6050...");
-  mpu.initialize();
-  if (!mpu.testConnection()) {
-    Serial.println("Could not find a valid MPU6050 sensor, check wiring!");
+  // Initialize MPU6050 if connected (address 0x68)
+  Serial.println("Checking for MPU6050...");
+  if (checkI2CDevice(0x68)) {
+    Serial.println("MPU6050 found, initializing...");
+    mpu.initialize();
+    if (mpu.testConnection()) {
+      Serial.println("MPU6050 initialized successfully");
+      mpuConnected = true;
+    } else {
+      Serial.println("MPU6050 initialization failed");
+    }
   } else {
-    Serial.println("MPU6050 initialized successfully");
+    Serial.println("MPU6050 not found");
   }
   
-  // Initialize MAX30100
-  Serial.println("Initializing MAX30100...");
-  if (!pox.begin()) {
-    Serial.println("Could not find a valid MAX30100 sensor, check wiring!");
+  // Initialize MAX30100 if connected (address 0x57)
+  Serial.println("Checking for MAX30100...");
+  if (checkI2CDevice(0x57)) {
+    Serial.println("MAX30100 found, initializing...");
+    if (pox.begin()) {
+      Serial.println("MAX30100 initialized successfully");
+      pox.setOnBeatDetectedCallback(onBeatDetected);
+      maxConnected = true;
+    } else {
+      Serial.println("MAX30100 initialization failed");
+    }
   } else {
-    Serial.println("MAX30100 initialized successfully");
-    pox.setOnBeatDetectedCallback(onBeatDetected);
+    Serial.println("MAX30100 not found");
   }
   
   // Initialize GPS
   gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX, GPS_TX);
   Serial.println("GPS initialized");
+  gpsConnected = true;
   
   // Set up WiFi Access Point
   Serial.println("Setting up Access Point...");
@@ -94,7 +119,11 @@ void setup() {
 void loop() {
   server.handleClient();
   updateSensorData();
-  pox.update();
+  
+  // Only update MAX30100 if connected
+  if (maxConnected) {
+    pox.update();
+  }
 }
 
 void updateSensorData() {
@@ -102,46 +131,52 @@ void updateSensorData() {
   if (millis() - lastDataUpdate > 500) {
     lastDataUpdate = millis();
     
-    // Read GPS data
-    while (gpsSerial.available() > 0) {
-      if (gps.encode(gpsSerial.read())) {
-        if (gps.location.isValid()) {
-          latitude = gps.location.lat();
-          longitude = gps.location.lng();
-        }
-        if (gps.altitude.isValid()) {
-          altitude = gps.altitude.meters();
-        }
-        if (gps.speed.isValid()) {
-          speed = gps.speed.kmph();
-        }
-        if (gps.satellites.isValid()) {
-          satellites = gps.satellites.value();
+    // Read GPS data if connected
+    if (gpsConnected) {
+      while (gpsSerial.available() > 0) {
+        if (gps.encode(gpsSerial.read())) {
+          if (gps.location.isValid()) {
+            latitude = gps.location.lat();
+            longitude = gps.location.lng();
+          }
+          if (gps.altitude.isValid()) {
+            altitude = gps.altitude.meters();
+          }
+          if (gps.speed.isValid()) {
+            speed = gps.speed.kmph();
+          }
+          if (gps.satellites.isValid()) {
+            satellites = gps.satellites.value();
+          }
         }
       }
     }
     
-    // Read MPU6050 data
-    int16_t ax, ay, az, gx, gy, gz;
-    mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+    // Read MPU6050 data if connected
+    if (mpuConnected) {
+      int16_t ax, ay, az, gx, gy, gz;
+      mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+      
+      // Convert to meaningful units
+      // Accelerometer LSB sensitivity is 16384 LSB/g for ±2g range (default)
+      accelX = ax / 16384.0; // in g
+      accelY = ay / 16384.0;
+      accelZ = az / 16384.0;
+      
+      // Gyro LSB sensitivity is 131 LSB/(°/s) for ±250°/s range (default)
+      gyroX = gx / 131.0; // in °/s
+      gyroY = gy / 131.0;
+      gyroZ = gz / 131.0;
+      
+      // Read temperature from MPU6050
+      temperature = mpu.getTemperature() / 340.0 + 36.53; // Formula from datasheet
+    }
     
-    // Convert to meaningful units
-    // Accelerometer LSB sensitivity is 16384 LSB/g for ±2g range (default)
-    accelX = ax / 16384.0; // in g
-    accelY = ay / 16384.0;
-    accelZ = az / 16384.0;
-    
-    // Gyro LSB sensitivity is 131 LSB/(°/s) for ±250°/s range (default)
-    gyroX = gx / 131.0; // in °/s
-    gyroY = gy / 131.0;
-    gyroZ = gz / 131.0;
-    
-    // Read temperature from MPU6050
-    temperature = mpu.getTemperature() / 340.0 + 36.53; // Formula from datasheet
-    
-    // Read MAX30100 data
-    heartRate = pox.getHeartRate();
-    spO2 = pox.getSpO2();
+    // Read MAX30100 data if connected
+    if (maxConnected) {
+      heartRate = pox.getHeartRate();
+      spO2 = pox.getSpO2();
+    }
   }
 }
 
@@ -150,6 +185,7 @@ String getJsonData() {
   
   // GPS data
   json += "\"gps\":{";
+  json += "\"connected\":" + String(gpsConnected ? "true" : "false") + ",";
   json += "\"lat\":" + String(latitude, 6) + ",";
   json += "\"lng\":" + String(longitude, 6) + ",";
   json += "\"alt\":" + String(altitude, 2) + ",";
@@ -159,6 +195,7 @@ String getJsonData() {
   
   // MPU6050 data
   json += "\"mpu\":{";
+  json += "\"connected\":" + String(mpuConnected ? "true" : "false") + ",";
   json += "\"accelX\":" + String(accelX, 2) + ",";
   json += "\"accelY\":" + String(accelY, 2) + ",";
   json += "\"accelZ\":" + String(accelZ, 2) + ",";
@@ -170,6 +207,7 @@ String getJsonData() {
   
   // MAX30100 data
   json += "\"heart\":{";
+  json += "\"connected\":" + String(maxConnected ? "true" : "false") + ",";
   json += "\"rate\":" + String(heartRate, 1) + ",";
   json += "\"spo2\":" + String(spO2, 1) + ",";
   json += "\"beat\":" + String((millis() - lastHeartbeatDetection < 1000) ? 1 : 0);
@@ -195,6 +233,8 @@ void handleRoot() {
                 "    .data-row { display: flex; justify-content: space-between; margin: 8px 0; }"
                 "    .label { font-weight: bold; color: #7f8c8d; }"
                 "    .value { color: #2c3e50; }"
+                "    .disconnected { color: #e74c3c; }"
+                "    .connected { color: #27ae60; }"
                 "    .heartbeat { color: red; animation: pulse 1s infinite; display: none; }"
                 "    @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }"
                 "  </style>"
@@ -203,7 +243,7 @@ void handleRoot() {
                 "  <h1>ESP32 Sensor Dashboard</h1>"
                 "  <div class='dashboard'>"
                 "    <div class='card'>"
-                "      <h2>GPS Data</h2>"
+                "      <h2>GPS Data <span id='gps-status' class='disconnected'>(Disconnected)</span></h2>"
                 "      <div class='data-row'><span class='label'>Latitude:</span> <span id='gps-lat' class='value'>--.------</span></div>"
                 "      <div class='data-row'><span class='label'>Longitude:</span> <span id='gps-lng' class='value'>--.------</span></div>"
                 "      <div class='data-row'><span class='label'>Altitude:</span> <span id='gps-alt' class='value'>--.-</span> m</div>"
@@ -211,7 +251,7 @@ void handleRoot() {
                 "      <div class='data-row'><span class='label'>Satellites:</span> <span id='gps-sat' class='value'>--</span></div>"
                 "    </div>"
                 "    <div class='card'>"
-                "      <h2>MPU6050 Data</h2>"
+                "      <h2>MPU6050 Data <span id='mpu-status' class='disconnected'>(Disconnected)</span></h2>"
                 "      <div class='data-row'><span class='label'>Accel X:</span> <span id='mpu-ax' class='value'>--.-</span> g</div>"
                 "      <div class='data-row'><span class='label'>Accel Y:</span> <span id='mpu-ay' class='value'>--.-</span> g</div>"
                 "      <div class='data-row'><span class='label'>Accel Z:</span> <span id='mpu-az' class='value'>--.-</span> g</div>"
@@ -221,7 +261,7 @@ void handleRoot() {
                 "      <div class='data-row'><span class='label'>Temperature:</span> <span id='mpu-temp' class='value'>--.-</span> °C</div>"
                 "    </div>"
                 "    <div class='card'>"
-                "      <h2>Heart Rate Data</h2>"
+                "      <h2>Heart Rate Data <span id='heart-status' class='disconnected'>(Disconnected)</span></h2>"
                 "      <div class='data-row'>"
                 "        <span class='label'>Heart Rate:</span> "
                 "        <span id='heart-rate' class='value'>--.-</span> BPM "
@@ -235,6 +275,14 @@ void handleRoot() {
                 "      fetch('/update')"
                 "        .then(response => response.json())"
                 "        .then(data => {"
+                "          // Update connection status"
+                "          document.getElementById('gps-status').textContent = data.gps.connected ? '(Connected)' : '(Disconnected)';"
+                "          document.getElementById('gps-status').className = data.gps.connected ? 'connected' : 'disconnected';"
+                "          document.getElementById('mpu-status').textContent = data.mpu.connected ? '(Connected)' : '(Disconnected)';"
+                "          document.getElementById('mpu-status').className = data.mpu.connected ? 'connected' : 'disconnected';"
+                "          document.getElementById('heart-status').textContent = data.heart.connected ? '(Connected)' : '(Disconnected)';"
+                "          document.getElementById('heart-status').className = data.heart.connected ? 'connected' : 'disconnected';"
+                "          "
                 "          // Update GPS data"
                 "          document.getElementById('gps-lat').textContent = data.gps.lat.toFixed(6);"
                 "          document.getElementById('gps-lng').textContent = data.gps.lng.toFixed(6);"

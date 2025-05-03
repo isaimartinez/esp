@@ -280,10 +280,12 @@ void updateSensorData() {
       }
     }
     
-    // Read MPU6050 data if connected
-    if (mpuConnected) {
-      sensors_event_t a, g, temp;
-      mpu.getEvent(&a, &g, &temp);
+    // Read MPU6050 data - even if it was initially marked as not connected
+    // This allows recovery if the sensor was connected after boot
+    sensors_event_t a, g, temp;
+    if (mpu.getEvent(&a, &g, &temp)) {
+      // Mark as connected since we could read data
+      mpuConnected = true;
       
       // Get accelerometer data (in m/s^2)
       accelX = a.acceleration.x;

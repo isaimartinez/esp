@@ -5,6 +5,8 @@
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
 #include <MAX30100_PulseOximeter.h>
+#include <Adafruit_SSD1306.h>
+#include <Adafruit_GFX.h>
 
 // WiFi credentials
 const char* ssid = "ESP32_AP";
@@ -15,6 +17,13 @@ WebServer server(80);
 TinyGPSPlus gps;
 Adafruit_MPU6050 mpu;
 PulseOximeter pox;
+
+// OLED Display settings
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1  // Reset pin # (or -1 if sharing Arduino reset pin)
+#define SCREEN_ADDRESS 0x7A  // Common OLED display address
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 // GPS module connected to Serial2
 #define GPS_RX 16
@@ -37,6 +46,7 @@ float spO2 = 0;
 bool mpuConnected = false;
 bool maxConnected = false;
 bool gpsConnected = false;
+bool oledConnected = false;
 
 // Timer variables
 unsigned long lastDataUpdate = 0;
@@ -61,6 +71,44 @@ bool checkI2CDevice(byte address) {
   return (error == 0); // Return true if device exists (error = 0)
 }
 
+// Function to scan all I2C addresses
+void scanI2CDevices() {
+  byte error, address;
+  int nDevices = 0;
+  
+  Serial.println("Scanning for I2C devices...");
+  
+  for(address = 1; address < 127; address++) {
+    Wire.beginTransmission(address);
+    error = Wire.endTransmission();
+    
+    if (error == 0) {
+      Serial.print("I2C device found at address 0x");
+      if (address < 16) {
+        Serial.print("0");
+      }
+      Serial.print(address, HEX);
+      Serial.println("  !");
+      nDevices++;
+    }
+    else if (error == 4) {
+      Serial.print("Unknown error at address 0x");
+      if (address < 16) {
+        Serial.print("0");
+      }
+      Serial.println(address, HEX);
+    }    
+  }
+  
+  if (nDevices == 0) {
+    Serial.println("No I2C devices found\n");
+  } else {
+    Serial.print("Found ");
+    Serial.print(nDevices);
+    Serial.println(" device(s)\n");
+  }
+}
+
 void setup() {
   // Initialize Serial for debugging
   Serial.begin(115200);
@@ -69,10 +117,51 @@ void setup() {
   Serial.println("ESP32 Sensor Web Server - Starting up...");
   Serial.println("==============================================");
 
-  // Initialize I2C communication
+  // Initialize I2C communication with specific pins and frequency
   Serial.println("Initializing I2C bus...");
-  Wire.begin();
-  Serial.println("I2C bus initialized");
+  
+  // ESP32 default I2C pins are GPIO21 (SDA) and GPIO22 (SCL)
+  // But we can explicitly set them - try GPIO16 (SDA) and GPIO17 (SCL) as alternatives
+  #define I2C_SDA 21
+  #define I2C_SCL 22
+  #define I2C_FREQ 100000  // Try a lower frequency (100kHz) for better reliability
+  
+  Wire.begin(I2C_SDA, I2C_SCL, I2C_FREQ);
+  Serial.printf("I2C bus initialized on pins SDA=%d, SCL=%d at %d Hz\n", I2C_SDA, I2C_SCL, I2C_FREQ);
+  
+  // Add a delay to stabilize I2C
+  delay(100);
+  
+  // Scan for I2C devices to find all available addresses
+  scanI2CDevices();
+  
+  // Initialize OLED display first
+  Serial.println("\n--- OLED Display Initialization ---");
+  // Try common OLED addresses
+  byte oledAddresses[] = {0x3C, 0x3D, 0x78, 0x7A};
+  
+  oledConnected = false;
+  for (int i = 0; i < 4 && !oledConnected; i++) {
+    Serial.printf("Trying OLED at address 0x%02X... ", oledAddresses[i]);
+    if (display.begin(SSD1306_SWITCHCAPVCC, oledAddresses[i])) {
+      Serial.println("SUCCESS!");
+      display.clearDisplay();
+      display.setTextSize(1);
+      display.setTextColor(SSD1306_WHITE);
+      display.setCursor(0, 0);
+      display.println("ESP32 Sensor Hub");
+      display.println("Initializing...");
+      display.display();
+      oledConnected = true;
+      Serial.printf("OLED connected at 0x%02X\n", oledAddresses[i]);
+    } else {
+      Serial.println("Failed");
+    }
+  }
+  
+  if (!oledConnected) {
+    Serial.println("Could not find an OLED display");
+  }
   
   // Initialize MPU6050 if connected (address 0x68)
   Serial.println("\n--- MPU6050 Initialization ---");
@@ -102,21 +191,22 @@ void setup() {
     Serial.println("MPU6050 not found");
   }
   
-  // Initialize MAX30100 if connected (address 0x57)
+  // Initialize MAX30100
   Serial.println("\n--- MAX30100 Initialization ---");
-  Serial.println("Checking for MAX30100...");
-  if (checkI2CDevice(0x57)) {
-    Serial.println("MAX30100 found, initializing...");
-    if (pox.begin()) {
-      Serial.println("MAX30100 initialized successfully");
-      pox.setOnBeatDetectedCallback(onBeatDetected);
-      Serial.println("Heartbeat detection callback set");
-      maxConnected = true;
-    } else {
-      Serial.println("MAX30100 initialization failed");
-    }
+  Serial.print("Initializing pulse oximeter..");
+  
+  // Initialize the PulseOximeter instance and handle failures
+  if (!pox.begin()) {
+    Serial.println("FAILED");
+    Serial.println("MAX30100 initialization failed - check wiring or I2C address");
+    maxConnected = false;
   } else {
-    Serial.println("MAX30100 not found");
+    Serial.println("SUCCESS");
+    Serial.println("MAX30100 initialized successfully");
+    // Register callback for the beat detection
+    pox.setOnBeatDetectedCallback(onBeatDetected);
+    Serial.println("Heartbeat detection callback set");
+    maxConnected = true;
   }
   
   // Initialize GPS
@@ -162,7 +252,64 @@ void setup() {
   Serial.println(mpuConnected ? "Connected" : "Not connected");
   Serial.print("- MAX30100: ");
   Serial.println(maxConnected ? "Connected" : "Not connected");
+  Serial.print("- OLED: ");
+  Serial.println(oledConnected ? "Connected" : "Not connected");
   Serial.println("==============================================\n");
+}
+
+// Function to update OLED display
+void updateOLEDDisplay() {
+  if (!oledConnected) return;
+  
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  
+  // Title
+  display.println("ESP32 Sensor Hub");
+  display.println("---------------");
+  
+  // GPS Status
+  display.print("GPS: ");
+  if (gpsConnected) {
+    display.print("OK ");
+    display.print(satellites);
+    display.println(" sats");
+    display.print("Lat:");
+    display.println(latitude, 4);
+    display.print("Lng:");
+    display.println(longitude, 4);
+  } else {
+    display.println("Disconnected");
+  }
+  
+  // MPU6050 Status
+  display.print("MPU: ");
+  if (mpuConnected) {
+    display.println("OK");
+    display.print("Acc:");
+    display.print(accelX, 1);
+    display.print(",");
+    display.print(accelY, 1);
+    display.print(",");
+    display.println(accelZ, 1);
+  } else {
+    display.println("Disconnected");
+  }
+  
+  // MAX30100 Status
+  display.print("HR: ");
+  if (maxConnected) {
+    display.print(heartRate, 0);
+    display.print("BPM SpO2:");
+    display.print(spO2, 0);
+    display.println("%");
+  } else {
+    display.println("Disconnected");
+  }
+  
+  display.display();
 }
 
 void loop() {
@@ -174,9 +321,10 @@ void loop() {
     pox.update();
   }
   
-  // Print logs periodically
+  // Print logs and update OLED periodically
   if (millis() - lastLogTime > LOG_INTERVAL) {
     printSensorData();
+    updateOLEDDisplay();
     lastLogTime = millis();
   }
 }
@@ -248,6 +396,35 @@ void updateSensorData() {
   if (millis() - lastDataUpdate > 500) {
     lastDataUpdate = millis();
     
+    // Try to reconnect OLED if it's disconnected (only try once every 10 seconds)
+    static unsigned long lastOLEDReconnect = 0;
+    if (!oledConnected && (millis() - lastOLEDReconnect > 10000)) {
+      lastOLEDReconnect = millis();
+      Serial.println("Attempting to reconnect OLED display...");
+      
+      // Try common OLED addresses
+      byte oledAddresses[] = {0x3C, 0x3D, 0x78, 0x7A};
+      
+      for (int i = 0; i < 4; i++) {
+        Serial.printf("Trying OLED at address 0x%02X... ", oledAddresses[i]);
+        if (display.begin(SSD1306_SWITCHCAPVCC, oledAddresses[i])) {
+          Serial.println("SUCCESS!");
+          display.clearDisplay();
+          display.setTextSize(1);
+          display.setTextColor(SSD1306_WHITE);
+          display.setCursor(0, 0);
+          display.println("ESP32 Sensor Hub");
+          display.println("Reconnected!");
+          display.display();
+          oledConnected = true;
+          Serial.printf("OLED reconnected at 0x%02X\n", oledAddresses[i]);
+          break;
+        } else {
+          Serial.println("Failed");
+        }
+      }
+    }
+    
     // Read GPS data if connected
     if (gpsConnected) {
       int availableBytes = gpsSerial.available();
@@ -280,34 +457,70 @@ void updateSensorData() {
       }
     }
     
-    // Read MPU6050 data if connected
-    if (mpuConnected) {
-      sensors_event_t a, g, temp;
-      mpu.getEvent(&a, &g, &temp);
-      
-      // Get accelerometer data (in m/s^2)
-      accelX = a.acceleration.x;
-      accelY = a.acceleration.y;
-      accelZ = a.acceleration.z;
-      
-      // Get gyroscope data (in rad/s)
-      gyroX = g.gyro.x;
-      gyroY = g.gyro.y;
-      gyroZ = g.gyro.z;
-      
-      // Get temperature (in °C)
-      temperature = temp.temperature;
+    // Try to read MPU6050 data even if it was initially disconnected
+    // This allows recovery if the sensor was connected after boot
+    
+    // First, check if we need to reconnect
+    if (!mpuConnected) {
+      // Try to initialize the sensor if it was previously disconnected
+      if (mpu.begin()) {
+        Serial.println("MPU6050 connected!");
+        mpuConnected = true;
+      }
     }
     
-    // Read MAX30100 data if connected
+    // Read data if connected
+    if (mpuConnected) {
+      sensors_event_t a, g, temp;
+      if (mpu.getEvent(&a, &g, &temp)) {
+        // Get accelerometer data (in m/s^2)
+        accelX = a.acceleration.x;
+        accelY = a.acceleration.y;
+        accelZ = a.acceleration.z;
+        
+        // Get gyroscope data (in rad/s)
+        gyroX = g.gyro.x;
+        gyroY = g.gyro.y;
+        gyroZ = g.gyro.z;
+        
+        // Get temperature (in °C)
+        temperature = temp.temperature;
+      } else {
+        // If we fail to read, mark as disconnected
+        mpuConnected = false;
+      }
+    }
+    
+    // Try to read MAX30100 data even if it was initially disconnected
+    // This allows recovery if the sensor was connected after boot
+    
+    // First, check if we need to reconnect
+    if (!maxConnected) {
+      // Try to initialize the sensor if it was previously disconnected
+      if (pox.begin()) {
+        Serial.println("MAX30100 connected!");
+        pox.setOnBeatDetectedCallback(onBeatDetected);
+        maxConnected = true;
+      }
+    }
+    
     if (maxConnected) {
-      float prevHeartRate = heartRate;
-      float prevSpO2 = spO2;
+      // Make sure to call update as fast as possible
+      pox.update(); // This is void, doesn't return a value
       
-      heartRate = pox.getHeartRate();
-      spO2 = pox.getSpO2();
+      // Check for valid readings
+      float newHeartRate = pox.getHeartRate();
+      float newSpO2 = pox.getSpO2();
       
-      if (heartRate != prevHeartRate || spO2 != prevSpO2) {
+      // Only update if we have valid values (non-zero)
+      if (newHeartRate > 0) {
+        heartRate = newHeartRate;
+      }
+      if (newSpO2 > 0) {
+        spO2 = newSpO2;
+      }
+      
+      if (heartRate > 0 || spO2 > 0) {
         Serial.print("MAX30100 Update - Heart rate: ");
         Serial.print(heartRate);
         Serial.print(" BPM, SpO2: ");

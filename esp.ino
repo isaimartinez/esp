@@ -27,8 +27,8 @@ PulseOximeter pox;
 #define I2C1_SCL 22
 #define I2C2_SDA 16  // OLED display
 #define I2C2_SCL 17  // OLED display
-#define I2C3_SDA 1   // MAX30100
-#define I2C3_SCL 3   // MAX30100
+#define I2C3_SDA 15   // MAX30100
+#define I2C3_SCL 4   // MAX30100
 #define I2C_FREQ 50000  // Reduced from 100000 to 50000 for more reliable communication
 
 // OLED Display settings

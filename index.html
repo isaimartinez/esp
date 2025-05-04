@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+  <meta charset='UTF-8'>
+  <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+  <title>ESP32 Sensor Dashboard</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f4f4f4; }
+    h1 { color: #333; text-align: center; }
+    .dashboard { display: flex; flex-wrap: wrap; justify-content: space-around; }
+    .card { background: white; border-radius: 8px; padding: 15px; margin: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); width: 300px; }
+    .card h2 { margin-top: 0; color: #2c3e50; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+    .data-row { display: flex; justify-content: space-between; margin: 8px 0; }
+    .label { font-weight: bold; color: #7f8c8d; }
+    .value { color: #2c3e50; }
+    .disconnected { color: #e74c3c; }
+    .connected { color: #27ae60; }
+    .heartbeat { color: red; animation: pulse 1s infinite; display: none; }
+    @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
+    #status { position: fixed; top: 10px; right: 10px; padding: 10px; background: #333; color: white; border-radius: 5px; }
+    #refresh-button {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      padding: 10px 20px;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 16px;
+    }
+    #refresh-button:hover {
+      background-color: #27ae60;
+    }
+    #refresh-button:active {
+      background-color: #27ae60;
+    }
+  </style>
+</head>
+<body>
+  <button id='refresh-button'>Refresh Data</button>
+  <div id='status'>Page Loaded</div>
+  <h1>ESP32 Sensor Dashboard</h1>
+  <div class='dashboard'>
+    <div class='card'>
+      <h2>GPS Data <span id='gps-status' class='disconnected'>(Disconnected)</span></h2>
+      <div class='data-row'><span class='label'>Latitude:</span> <span id='gps-lat' class='value'>--.------</span></div>
+      <div class='data-row'><span class='label'>Longitude:</span> <span id='gps-lng' class='value'>--.------</span></div>
+      <div class='data-row'><span class='label'>Altitude:</span> <span id='gps-alt' class='value'>--.-</span> m</div>
+      <div class='data-row'><span class='label'>Speed:</span> <span id='gps-speed' class='value'>--.-</span> km/h</div>
+      <div class='data-row'><span class='label'>Satellites:</span> <span id='gps-sat' class='value'>--</span></div>
+    </div>
+    <div class='card'>
+      <h2>MPU6050 Data <span id='mpu-status' class='disconnected'>(Disconnected)</span></h2>
+      <div class='data-row'><span class='label'>Accel X:</span> <span id='mpu-ax' class='value'>--.-</span> m/s²</div>
+      <div class='data-row'><span class='label'>Accel Y:</span> <span id='mpu-ay' class='value'>--.-</span> m/s²</div>
+      <div class='data-row'><span class='label'>Accel Z:</span> <span id='mpu-az' class='value'>--.-</span> m/s²</div>
+      <div class='data-row'><span class='label'>Gyro X:</span> <span id='mpu-gx' class='value'>--.-</span> rad/s</div>
+      <div class='data-row'><span class='label'>Gyro Y:</span> <span id='mpu-gy' class='value'>--.-</span> rad/s</div>
+      <div class='data-row'><span class='label'>Gyro Z:</span> <span id='mpu-gz' class='value'>--.-</span> rad/s</div>
+      <div class='data-row'><span class='label'>Temperature:</span> <span id='mpu-temp' class='value'>--.-</span> °C</div>
+    </div>
+    <div class='card'>
+      <h2>Heart Rate Data <span id='heart-status' class='disconnected'>(Disconnected)</span></h2>
+      <div class='data-row'>
+        <span class='label'>Heart Rate:</span>
+        <span id='heart-rate' class='value'>--.-</span> BPM
+        <span id='heartbeat' class='heartbeat'>♥</span>
+      </div>
+      <div class='data-row'><span class='label'>SpO2:</span> <span id='heart-spo2' class='value'>--.-</span> %</div>
+    </div>
+  </div>
+  <script>
+    document.getElementById('status').textContent='Script Running';
+    document.getElementById('refresh-button').addEventListener('click',function(){updateSensorData();});
+    function updateSensorData(){
+      document.getElementById('status').textContent='Updating...';
+      fetch('/update').then(response=>{
+        if(!response.ok){throw new Error('Network response was not ok');}
+        return response.json();
+      }).then(data=>{
+        document.getElementById('status').textContent='Last Update: '+new Date().toLocaleTimeString();
+        document.getElementById('gps-status').textContent=data.gps.connected?'(Connected)':'(Disconnected)';
+        document.getElementById('gps-status').className=data.gps.connected?'connected':'disconnected';
+        document.getElementById('mpu-status').textContent=data.mpu.connected?'(Connected)':'(Disconnected)';
+        document.getElementById('mpu-status').className=data.mpu.connected?'connected':'disconnected';
+        document.getElementById('heart-status').textContent=data.heart.connected?'(Connected)':'(Disconnected)';
+        document.getElementById('heart-status').className=data.heart.connected?'connected':'disconnected';
+        document.getElementById('gps-lat').textContent=data.gps.lat.toFixed(6);
+        document.getElementById('gps-lng').textContent=data.gps.lng.toFixed(6);
+        document.getElementById('gps-alt').textContent=data.gps.alt.toFixed(2);
+        document.getElementById('gps-speed').textContent=data.gps.speed.toFixed(2);
+        document.getElementById('gps-sat').textContent=data.gps.satellites;
+        document.getElementById('mpu-ax').textContent=data.mpu.accelX.toFixed(2);
+        document.getElementById('mpu-ay').textContent=data.mpu.accelY.toFixed(2);
+        document.getElementById('mpu-az').textContent=data.mpu.accelZ.toFixed(2);
+        document.getElementById('mpu-gx').textContent=data.mpu.gyroX.toFixed(2);
+        document.getElementById('mpu-gy').textContent=data.mpu.gyroY.toFixed(2);
+        document.getElementById('mpu-gz').textContent=data.mpu.gyroZ.toFixed(2);
+        document.getElementById('mpu-temp').textContent=data.mpu.temp.toFixed(2);
+        document.getElementById('heart-rate').textContent=data.heart.rate.toFixed(1);
+        document.getElementById('heart-spo2').textContent=data.heart.spo2.toFixed(1);
+        document.getElementById('heartbeat').style.display=data.heart.beat?'inline':'none';
+      }).catch(error=>{
+        console.error('Error:',error);
+        document.getElementById('status').textContent='Error: '+error.message;
+        setTimeout(updateSensorData,1000);
+      });
+    }
+    setInterval(updateSensorData,1000);
+    updateSensorData();
+  </script>
+</body>
+</html>

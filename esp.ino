@@ -4,7 +4,8 @@
 // Crear tres instancias de I2C
 TwoWire I2CSensors = TwoWire(0);
 TwoWire I2CDisplay = TwoWire(1);
-TwoWire I2CMax30100 = TwoWire(2);
+// Remove the third I2C instance since we'll use the same bus
+// TwoWire I2CMax30100 = TwoWire(2);
 #include <TinyGPS++.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
@@ -23,12 +24,10 @@ Adafruit_MPU6050 mpu;
 PulseOximeter pox;
 
 // I2C pins configuration
-#define I2C1_SDA 21
-#define I2C1_SCL 22
+#define I2C1_SDA 21  // Shared between MPU6050 and MAX30100
+#define I2C1_SCL 22  // Shared between MPU6050 and MAX30100
 #define I2C2_SDA 16  // OLED display
 #define I2C2_SCL 17  // OLED display
-#define I2C3_SDA 15   // MAX30100
-#define I2C3_SCL 4   // MAX30100
 #define I2C_FREQ 50000  // Reduced from 100000 to 50000 for more reliable communication
 
 // OLED Display settings
@@ -270,11 +269,10 @@ void initializeI2CBuses() {
   // First, try to reset all I2C buses
   resetI2CBus(I2C1_SDA, I2C1_SCL);
   resetI2CBus(I2C2_SDA, I2C2_SCL);
-  resetI2CBus(I2C3_SDA, I2C3_SCL);
   
-  // Initialize first I2C bus for sensors
+  // Initialize first I2C bus for sensors (shared between MPU6050 and MAX30100)
   if (I2C_DEBUG_MODE) {
-    Serial.printf("Setting up sensors I2C bus on SDA=%d, SCL=%d at %d Hz\n", I2C1_SDA, I2C1_SCL, I2C_FREQ);
+    Serial.printf("Setting up shared sensors I2C bus on SDA=%d, SCL=%d at %d Hz\n", I2C1_SDA, I2C1_SCL, I2C_FREQ);
   }
   I2CSensors.begin(I2C1_SDA, I2C1_SCL, I2C_FREQ);
   I2CSensors.setTimeout(1000);
@@ -286,7 +284,7 @@ void initializeI2CBuses() {
   if (I2C_DEBUG_MODE) {
     Serial.printf("SDA1 pin status: %d, SCL1 pin status: %d\n", digitalRead(I2C1_SDA), digitalRead(I2C1_SCL));
   }
-  Serial.printf("I2C Sensors bus initialized on pins SDA=%d, SCL=%d at %d Hz with pull-up resistors\n", I2C1_SDA, I2C1_SCL, I2C_FREQ);
+  Serial.printf("Shared I2C bus (MPU6050 & MAX30100) initialized on pins SDA=%d, SCL=%d at %d Hz with pull-up resistors\n", I2C1_SDA, I2C1_SCL, I2C_FREQ);
   
   // Initialize second I2C bus for OLED display
   if (I2C_DEBUG_MODE) {
@@ -304,22 +302,6 @@ void initializeI2CBuses() {
   }
   Serial.printf("I2C Display bus initialized on pins SDA=%d, SCL=%d at %d Hz with pull-up resistors\n", I2C2_SDA, I2C2_SCL, I2C_FREQ);
   
-  // Initialize third I2C bus for MAX30100
-  if (I2C_DEBUG_MODE) {
-    Serial.printf("Setting up MAX30100 I2C bus on SDA=%d, SCL=%d at %d Hz\n", I2C3_SDA, I2C3_SCL, I2C_FREQ);
-  }
-  I2CMax30100.begin(I2C3_SDA, I2C3_SCL, I2C_FREQ);
-  I2CMax30100.setTimeout(1000);
-  
-  // Enable internal pull-ups for SDA and SCL lines
-  pinMode(I2C3_SDA, INPUT_PULLUP);
-  pinMode(I2C3_SCL, INPUT_PULLUP);
-  
-  if (I2C_DEBUG_MODE) {
-    Serial.printf("SDA3 pin status: %d, SCL3 pin status: %d\n", digitalRead(I2C3_SDA), digitalRead(I2C3_SCL));
-  }
-  Serial.printf("I2C MAX30100 bus initialized on pins SDA=%d, SCL=%d at %d Hz with pull-up resistors\n", I2C3_SDA, I2C3_SCL, I2C_FREQ);
-  
   // Add a delay to stabilize I2C
   delay(200);
   
@@ -329,9 +311,8 @@ void initializeI2CBuses() {
   }
   
   // Scan for I2C devices on all buses
-  scanI2CDevices(I2CSensors, "Sensors Bus");
+  scanI2CDevices(I2CSensors, "MPU6050 Bus");
   scanI2CDevices(I2CDisplay, "Display Bus");
-  scanI2CDevices(I2CMax30100, "MAX30100 Bus");
 }
 
 // Function to initialize MPU6050
@@ -355,14 +336,14 @@ bool initializeMPU6050() {
   resetI2CBus(I2C1_SDA, I2C1_SCL);
   delay(50);
   
-  Serial.println("Checking for MPU6050 on Sensors Bus...");
+  Serial.println("Checking for MPU6050 on MPU6050 Bus...");
   
   // Try both possible MPU6050 addresses
   bool mpuFound = false;
   byte mpuAddresses[] = {0x68, 0x69};
   
   for (int i = 0; i < 2 && !mpuFound; i++) {
-    if (checkI2CDevice(I2CSensors, mpuAddresses[i], "Sensors Bus")) {
+    if (checkI2CDevice(I2CSensors, mpuAddresses[i], "MPU6050 Bus")) {
       Serial.printf("MPU6050 found at address 0x%02X, initializing...\n", mpuAddresses[i]);
       
       I2CSensors.setTimeout(1000);
@@ -478,12 +459,16 @@ void setup() {
   
   // Initialize MAX30100 on I2CMax30100 bus
   Serial.println("\n--- MAX30100 Initialization ---");
-  Serial.print("Initializing pulse oximeter on MAX30100 Bus...");
-  
+  Serial.print("Initializing pulse oximeter on pins SDA=");
+  Serial.print(I2C1_SDA);
+  Serial.print(", SCL=");
+  Serial.print(I2C1_SCL);
+  Serial.println("...");
+
   // Necesitamos asignar el bus I2CMax30100 a la variable Wire que usa internamente MAX30100
   // Esto es un hack porque la biblioteca MAX30100 no permite especificar qué bus I2C usar
-  Wire = I2CMax30100;
-  
+  Wire = I2CSensors;
+
   // Initialize the PulseOximeter instance and handle failures
   if (!pox.begin()) {
     Serial.println("FAILED");
@@ -640,7 +625,7 @@ void loop() {
   // Only update MAX30100 if connected - this needs frequent polling
   if (sensorData.maxConnected) {
     // El MAX30100 usa internamente Wire, aseguramos que esté configurado al bus correcto
-    Wire = I2CMax30100;
+    Wire = I2CSensors;
     pox.update();
   }
   
@@ -836,7 +821,7 @@ void updateMPUData() {
     // Try both possible addresses
     byte mpuAddresses[] = {0x68, 0x69};
     for (int i = 0; i < 2; i++) {
-      if (checkI2CDevice(I2CSensors, mpuAddresses[i], "Sensors Bus")) {
+      if (checkI2CDevice(I2CSensors, mpuAddresses[i], "MPU6050 Bus")) {
         if (mpu.begin(mpuAddresses[i], &I2CSensors, 1)) {
           Serial.printf("MPU6050 reconnected at address 0x%02X!\n", mpuAddresses[i]);
           
@@ -925,7 +910,7 @@ void updateMPUData() {
 void updateMAXData() {
   // Try to reconnect if disconnected
   if (!sensorData.maxConnected) {
-    Wire = I2CMax30100; // Switch to the MAX30100 bus
+    Wire = I2CSensors;
     if (pox.begin()) {
       Serial.println("MAX30100 connected!");
       pox.setOnBeatDetectedCallback(onBeatDetected);
@@ -935,7 +920,7 @@ void updateMAXData() {
   
   if (sensorData.maxConnected) {
     // Ensure we're using the correct bus
-    Wire = I2CMax30100;
+    Wire = I2CSensors;
     
     // Call update (already done in loop but we also do it here for coherence)
     pox.update();

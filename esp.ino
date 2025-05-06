@@ -30,6 +30,10 @@ PulseOximeter pox;
 #define I2C2_SCL 17  // OLED display
 #define I2C_FREQ 50000  // Reduced from 100000 to 50000 for more reliable communication
 
+// MAX30100 settings
+#define REPORTING_PERIOD_MS 1000  // How often to update MAX30100 values
+#define MAX30100_I2C_ADDRESS 0x57  // Default MAX30100 I2C address
+
 // OLED Display settings
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -465,22 +469,38 @@ void setup() {
   Serial.print(I2C1_SCL);
   Serial.println("...");
 
-  // Necesitamos asignar el bus I2CMax30100 a la variable Wire que usa internamente MAX30100
-  // Esto es un hack porque la biblioteca MAX30100 no permite especificar qué bus I2C usar
+  // Asign I2CSensors to Wire (the internal variable used by MAX30100)
   Wire = I2CSensors;
 
-  // Initialize the PulseOximeter instance and handle failures
-  if (!pox.begin()) {
-    Serial.println("FAILED");
-    Serial.println("MAX30100 initialization failed - check wiring or I2C address");
+  // Check if MAX30100 is physically present on the bus
+  bool max30100Found = checkI2CDevice(I2CSensors, MAX30100_I2C_ADDRESS, "Sensors Bus");
+  if (!max30100Found) {
+    Serial.println("MAX30100 not detected on I2C bus! Check wiring.");
     sensorData.maxConnected = false;
   } else {
-    Serial.println("SUCCESS");
-    Serial.println("MAX30100 initialized successfully");
-    // Register callback for the beat detection
+    Serial.println("MAX30100 detected on I2C bus, initializing...");
+    
+    // Configure the PulseOximeter with more options
     pox.setOnBeatDetectedCallback(onBeatDetected);
-    Serial.println("Heartbeat detection callback set");
-    sensorData.maxConnected = true;
+    
+    // Initialize with custom settings for better readings
+    if (!pox.begin()) {
+      Serial.println("FAILED");
+      Serial.println("MAX30100 initialization failed - check wiring or I2C address");
+      sensorData.maxConnected = false;
+    } else {
+      Serial.println("SUCCESS");
+      Serial.println("MAX30100 initialized successfully");
+      
+      // Set optimal current values for the LEDs
+      // Note: Use setIRLedCurrent instead of setRedLedCurrent
+      pox.setIRLedCurrent(MAX30100_LED_CURR_7_6MA);
+      
+      // Register callback for the beat detection
+      pox.setOnBeatDetectedCallback(onBeatDetected);
+      Serial.println("Heartbeat detection callback set");
+      sensorData.maxConnected = true;
+    }
   }
   
   // Initialize GPS
@@ -908,13 +928,31 @@ void updateMPUData() {
 
 // Function to update MAX30100 data
 void updateMAXData() {
-  // Try to reconnect if disconnected
-  if (!sensorData.maxConnected) {
+  static unsigned long lastMAXReconnect = 0;
+  static unsigned long lastMAXUpdate = 0;
+  
+  // Try to reconnect if disconnected (not too frequently)
+  if (!sensorData.maxConnected && (millis() - lastMAXReconnect > 5000)) {
+    lastMAXReconnect = millis();
+    
+    // Make sure we're using the correct bus
     Wire = I2CSensors;
-    if (pox.begin()) {
-      Serial.println("MAX30100 connected!");
-      pox.setOnBeatDetectedCallback(onBeatDetected);
-      sensorData.maxConnected = true;
+    
+    // Check if the device is on the bus
+    if (checkI2CDevice(I2CSensors, MAX30100_I2C_ADDRESS, "Sensors Bus")) {
+      Serial.println("MAX30100 detected, attempting to initialize...");
+      
+      if (pox.begin()) {
+        Serial.println("MAX30100 connected!");
+        // Set optimal current values for the LEDs
+        pox.setIRLedCurrent(MAX30100_LED_CURR_7_6MA);
+        pox.setOnBeatDetectedCallback(onBeatDetected);
+        sensorData.maxConnected = true;
+      } else {
+        Serial.println("MAX30100 initialization failed");
+      }
+    } else {
+      Serial.println("MAX30100 not detected on I2C bus");
     }
   }
   
@@ -922,27 +960,45 @@ void updateMAXData() {
     // Ensure we're using the correct bus
     Wire = I2CSensors;
     
-    // Call update (already done in loop but we also do it here for coherence)
+    // Update the pulse oximeter
     pox.update();
     
-    // Check for valid readings
-    float newHeartRate = pox.getHeartRate();
-    float newSpO2 = pox.getSpO2();
-    
-    // Only update if we have valid values (non-zero)
-    if (newHeartRate > 0) {
-      sensorData.heartRate = newHeartRate;
-    }
-    if (newSpO2 > 0) {
-      sensorData.spO2 = newSpO2;
-    }
-    
-    if (sensorData.heartRate > 0 || sensorData.spO2 > 0) {
-      Serial.print("MAX30100 Update - Heart rate: ");
-      Serial.print(sensorData.heartRate);
+    // Check for valid readings periodically
+    if (millis() - lastMAXUpdate >= REPORTING_PERIOD_MS) {
+      lastMAXUpdate = millis();
+      
+      // Get new readings
+      float newHeartRate = pox.getHeartRate();
+      float newSpO2 = pox.getSpO2();
+      
+      // Debug the raw values
+      Serial.print("MAX30100 Raw Values - Heart rate: ");
+      Serial.print(newHeartRate);
       Serial.print(" BPM, SpO2: ");
-      Serial.print(sensorData.spO2);
+      Serial.print(newSpO2);
       Serial.println("%");
+      
+      // Only update if we have valid values (non-zero)
+      if (newHeartRate > 0) {
+        sensorData.heartRate = newHeartRate;
+      }
+      if (newSpO2 > 0) {
+        sensorData.spO2 = newSpO2;
+      }
+      
+      // If both readings are 0 for too long, there might be a problem
+      static int zeroReadingsCount = 0;
+      if (newHeartRate == 0 && newSpO2 == 0) {
+        zeroReadingsCount++;
+        if (zeroReadingsCount > 10) {  // After 10 zero readings (10 seconds), try to recalibrate
+          Serial.println("MAX30100 has returned zeros too many times, attempting to recalibrate...");
+          pox.begin();  // Re-initialize
+          pox.setIRLedCurrent(MAX30100_LED_CURR_7_6MA);  // Try different LED current
+          zeroReadingsCount = 0;
+        }
+      } else {
+        zeroReadingsCount = 0;  // Reset counter if we get valid readings
+      }
     }
   }
 }
